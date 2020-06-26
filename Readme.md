@@ -75,6 +75,13 @@ If everything is fine, run the below command to open sock-shop app in your brows
 ```bash
 $ open "http://$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].port}')"
 ```
+
+Note: If you are using `minikube`, remember to run 
+```bash 
+minikube tunnel
+```
+This will ensure you can open the url above in your browser.
+
 If everything is fine you should see the app up and running along with some socks :) 
 ### 5. User accounts
 
@@ -88,7 +95,7 @@ Istio’s traffic routing rules let you easily control the flow of traffic and A
 
 We start by rolling a new Deployment of `v2` version of the front-end service
 ```bash
-$ kubectl apply -f 2-traffic-management/canary/front-end-dep-v2.yaml  
+$ kubectl apply -f 2-traffic-management/front-end-dep-v2.yaml
 ```
 now we have 2 versions of the front-end app running side by side. However if you hit the browser you'll see only the `v1` (blue)
 
@@ -136,7 +143,7 @@ Istio allows you to configure faults for HTTP traffic, injecting arbitrary delay
 #### Delay fault
 In this example. we gonna inject five seconds delay for all traffic calling the `catalogue` service. This is a great way to reliably test how our app behaves on a bad network.
 ```bash
-$ kubectl apply -f 3-resiliency/fault-injection/delay-faults/delay-fault-injection-virtual-service.yaml
+$ kubectl apply -f 3-resiliency/fault-injection/delay-fault-injection-virtual-service.yaml
 ```
 Open the application and you can see that it takes now longer to render catalogs
 #### Abort fault
@@ -144,7 +151,7 @@ Replying to clients with specific response codes, like a 429 or a 500, is also g
 
 For example, we can simulate 10% of requests to `catalogue` service is failing at runtime with a 500 response code.
 ```bash
-$ kubectl apply -f 3-resiliency/fault-injection/delay-faults/abort-fault-injection-virtual-service.yaml 
+$ kubectl apply -f 3-resiliency/fault-injection/abort-fault-injection-virtual-service.yaml 
 $ open "http://$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}'):$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.spec.ports[?(@.name=="http2")].port}')/catalogue"
 ```
 Refresh the page a couple of times. You'll notice that sometimes it doesn't return the json list of catalogs
@@ -211,7 +218,7 @@ To mimic a real world example, we suppose that we have 2 plans:
 We configure Envoy rate limiting actions to look for `x-plan` and `x-account` in request headers. We also configure the descriptor match any request with the account and plan keys, such that (`'account', '<unique value>')`, `('plan', 'BASIC | PLUS')`. The `account` key doesn't specify any value, it uses each unique value passed into the rate limiting service to match. The `plan` descriptor key has two values specified and depending on which one matches (BASIC or PLUS) determines the rate limit, either 5 request per minute for `BASIC` or 20 requests per minute for `PLUS`.
 ```
 $ kubectl apply -f 4-policy/rate-limiting/rate-limit-service.yaml
-$ kubectl apply -f 4-policy/rate-limiting/date-limit-envoy-filter.yaml  
+$ kubectl apply -f 4-policy/rate-limiting/rate-limit-envoy-filter.yaml 
 ``` 
 Testing the above scenarios prove that the rate limiting is working
 ```bash
@@ -219,18 +226,43 @@ Testing the above scenarios prove that the rate limiting is working
 $ kubectl apply -f 4-policy/fortio.yaml 
 $ FORTIO_POD=$(kubectl get pod -n sock-shop| grep fortio | awk '{ print $1 }')  
 ####  BASIC PLAN
-$ kubectl -n sock-shop exec -it $FORTIO_POD  -c fortio /usr/bin/fortio -- load -c 1 -qps 0 -n 10 -loglevel Warning -H "x-plan: BASIC" -H "x-account: user" $INGRESS_IP/catalogue
+$ kubectl -n sock-shop exec -it $FORTIO_POD  -c fortio /usr/bin/fortio -- load -c 1 -qps 0 -n 2 -loglevel Warning -H "x-plan: BASIC" -H "x-account: user" $INGRESS_IP/catalogue
 ...
 Sockets used: 5 (for perfect keepalive, would be 1)
-Code 200 : 5 (50.0 %)
-Code 429 : 5 (50.0 %)
+Code 200 : 1 (50.0 %)
+Code 429 : 1 (50.0 %)
 ### PLUS PLAN
-$ kubectl -n sock-shop exec -it $FORTIO_POD  -c fortio /usr/bin/fortio -- load -c 1 -qps 0 -n 25 -loglevel Warning -H "x-plan: PLUS" -H "x-account: user2" $INGRESS_IP/catalogue
+$ kubectl -n sock-shop exec -it $FORTIO_POD  -c fortio /usr/bin/fortio -- load -c 1 -qps 0 -n 4 -loglevel Warning -H "x-plan: PLUS" -H "x-account: user2" $INGRESS_IP/catalogue
 ...
 Sockets used: 5 (for perfect keepalive, would be 1)
-Code 200 : 20 (80.0 %)
-Code 429 : 5 (20.0 %)
+Code 200 : 2 (50.0 %)
+Code 429 : 2 (50.0 %)
 ```
+
+Or you can use curl from your terminal:
+
+```bash
+export INGRESS_IP=$(kubectl -n istio-system get service istio-ingressgateway -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+
+curl --request GET "http://${INGRESS_IP}/catalogue" -I --header 'x-plan: BASIC' --header 'x-account: user'
+
+curl --request GET "http://${INGRESS_IP}/catalogue" -I --header 'x-plan: PLUS' --header 'x-account: user'
+```
+
+You can check in redis how keys are stored:
+
+```bash
+export REDIS_POD=$(kubectl get pod -n rate-limit | grep redis | awk '{ print $1 }')
+
+k -n rate-limit exec -it $REDIS_POD -c redis /bin/sh
+
+redis-cli
+
+keys *
+
+```
+
+
 #### 2. CORS
 Cross-Origin Resource Sharing (CORS) is a method of enforcing client-side access controls on resources by specifying external domains that are able to access certain or all routes of your domain. Browsers use the presence of HTTP headers to determine if a response from a different origin is allowed.
 
@@ -369,7 +401,7 @@ From the left-hand pane of the dashboard, select any service from the Service dr
 
 Click on any trace to see details. The trace is comprised of a set of spans, where each span corresponds to a  service, invoked during the execution of a request
 
-!(Jaeger Traces)[assets/jaeger-traces.png]
+![Jaeger Traces](assets/jaeger-traces.png)
 
 ### 4. Kiali
 First step, is to verify Kiali is running and port-forward to access kiali:
